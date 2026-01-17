@@ -66,35 +66,60 @@ def get_intent(query: str) -> str:
     if query in _intent_cache:
         return _intent_cache[query]
 
-    try:
-        from sentence_transformers import util
-        import torch
-
-        model = load_model()
-        if model is None:
-            return 'unknown'
-
-        intents = ['depósito', 'saldo', 'cartão', 'fees', 'viagens', 'suporte', 'yield', 'cashback']
-        query_emb = model.encode(query, convert_to_tensor=True)
-        
-        best_score = -1
-        best_intent = 'unknown'
-        
-        for intent in intents:
-            intent_emb = model.encode(intent, convert_to_tensor=True)
-            score = util.cos_sim(query_emb, intent_emb).item()
-            if score > best_score:
-                best_score = score
-                best_intent = intent
-        
-        if best_score > 0.62:  # threshold ajustado para mais precisão
-            return best_intent
+   try:
+    from sentence_transformers import util
+    import torch
+    model = load_model()
+    if model is None:
+        logging.warning("Modelo não carregou, fallback")
+        # Fallback keyword (já tens no código)
+        keywords = {
+            'depósito': ['depositar', 'depósito', 'tx hash', 'adicionar'],
+            'saldo': ['saldo', 'balance', 'quanto tenho'],
+            'cartão': ['cartão', 'card', 'kard'],
+            'fees': ['fees', 'taxas', 'custo'],
+            'viagens': ['viagem', 'travel', 'fora'],
+            'suporte': ['ajuda', 'suporte', 'ticket'],
+            'yield': ['yield', 'juros', 'apy'],
+            'cashback': ['cashback', 'recompensa', 'pontos']
+        }
+        for intent, words in keywords.items():
+            if any(w in query for w in words):
+                return intent
         return 'unknown'
-    
-    except Exception as e:
-        logging.error(f"Erro no get_intent: {e}")
-        logging.error(traceback.format_exc())
-        return 'unknown'
+    query_emb = model.encode(query, convert_to_tensor=True)
+    best_score = -1
+    best_intent = 'unknown'
+    for intent in intents:
+        intent_emb = model.encode(intent, convert_to_tensor=True)
+        score = util.cos_sim(query_emb, intent_emb).item()
+        if score > best_score:
+            best_score = score
+            best_intent = intent
+    if best_score > 0.62:
+        _intent_cache[query] = best_intent
+        logging.info(f"Intent ML: {best_intent} (score {best_score:.3f})")
+        return best_intent
+    _intent_cache[query] = 'unknown'
+    return 'unknown'
+except Exception as e:
+    logging.error(f"Erro no get_intent: {str(e)}")
+    logging.error(traceback.format_exc())
+    # Fallback keyword se crashar
+    keywords = {
+        'depósito': ['depositar', 'depósito', 'tx hash', 'adicionar'],
+        'saldo': ['saldo', 'balance', 'quanto tenho'],
+        'cartão': ['cartão', 'card', 'kard'],
+        'fees': ['fees', 'taxas', 'custo'],
+        'viagens': ['viagem', 'travel', 'fora'],
+        'suporte': ['ajuda', 'suporte', 'ticket'],
+        'yield': ['yield', 'juros', 'apy'],
+        'cashback': ['cashback', 'recompensa', 'pontos']
+    }
+    for intent, words in keywords.items():
+        if any(w in query for w in words):
+            return intent
+    return 'unknown'
 
 @app.route('/test')
 def test_route():
