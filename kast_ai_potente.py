@@ -348,5 +348,7 @@ def chat():
     return jsonify({"response": response})
 
 if __name__ == '__main__':
-    print("Servidor Flask a correr em http://127.0.0.1:5000")
-    app.run(debug=True, port=5000)
+    import os
+    port = int(os.environ.get("PORT", 5000))  # Usa a porta que o Railway manda
+    print(f"Servidor Flask a correr em http://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
