@@ -9,7 +9,7 @@ import uvicorn
 import logging
 from datetime import datetime
 from langdetect import detect, LangDetectException
-
+import traceback
 
 # Logging para ver o que está a acontecer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -88,14 +88,12 @@ def get_intent(query: str) -> str:
                 best_intent = intent
         
         if best_score > 0.62:  # threshold ajustado para mais precisão
-            _intent_cache[query] = best_intent
             return best_intent
-        
-        _intent_cache[query] = 'unknown'
         return 'unknown'
     
     except Exception as e:
         logging.error(f"Erro no get_intent: {e}")
+        logging.error(traceback.format_exc())
         return 'unknown'
 
 @app.route('/test')
