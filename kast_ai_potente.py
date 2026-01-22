@@ -16,6 +16,26 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = Flask(__name__)
 
+import sqlite3
+import json
+from flask_jwt_extended import JWTManager, create_access_token, verify_jwt_in_request, get_jwt_identity
+
+# Esta é a chave secreta que eu escolhi para ti (não mudes por agora)
+app.config['JWT_SECRET_KEY'] = 'tomas-kast-ai-2026-super-secreto-xyz1234567890'
+
+jwt = JWTManager(app)
+
+# Cria uma pequena base de dados para guardar os clientes (não precisas fazer nada, ela cria sozinha)
+def init_db():
+    conn = sqlite3.connect('clients.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS clients
+                 (client_id TEXT PRIMARY KEY, name TEXT, config_json TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()  # Executa automaticamente quando ligas o programa
+
 # Rate limiting (segurança básica)
 limiter = Limiter(
     get_remote_address,
