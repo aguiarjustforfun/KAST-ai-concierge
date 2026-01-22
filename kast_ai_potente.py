@@ -10,19 +10,33 @@ from datetime import datetime
 from langdetect import detect, LangDetectException
 import traceback
 import os
+import sqlite3
+import json
+from flask_jwt_extended import JWTManager, create_access_token, verify_jwt_in_request, get_jwt_identity
+from solana.rpc.api import Client
+from solders.signature import Signature
 
 # Logging para ver o que está a acontecer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Variáveis globais lazy para embeddings
+_model = None
+_intent_cache = {}
+
 app = Flask(__name__)
 
-import sqlite3
-import json
-from flask_jwt_extended import JWTManager, create_access_token, verify_jwt_in_request, get_jwt_identity
-
-app.config['JWT_SECRET_KEY'] = 'tomas-kast-ai-2026-super-secreto-xyz1234567890'
+# Config JWT para API keys
+app.config['JWT_SECRET_KEY'] = 'tomas-kast-ai-2026-queluz-lisboa-super-secreto-xyz1234567890'
 jwt = JWTManager(app)
 
+# Rate limiting (segurança básica)
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["100 per day", "20 per hour"]
+)
+
+# Cria a base de dados para clientes multi-tenant
 def init_db():
     conn = sqlite3.connect('clients.db')
     c = conn.cursor()
@@ -33,6 +47,7 @@ def init_db():
 
 init_db()
 
+# Função para pegar client_id da chave API
 def get_client_id():
     try:
         verify_jwt_in_request()
@@ -40,6 +55,7 @@ def get_client_id():
     except:
         return None
 
+# Rota para adicionar cliente
 @app.route('/add-client', methods=['POST'])
 def add_client():
     data = request.get_json()
@@ -57,6 +73,7 @@ def add_client():
     conn.close()
     return jsonify({"success": True})
 
+# Rota para gerar chave API
 @app.route('/generate-key/<client_id>', methods=['GET'])
 def generate_key(client_id):
     token = create_access_token(identity=client_id)
@@ -79,7 +96,7 @@ def load_model():
 def get_intent(query: str) -> str:
     """Detecta o intent com embeddings ou fallback simples"""
     query = query.lower().strip()
-    
+
     # Fallback rápido se modelo não carregou
     if load_model() is None:
         keywords = {
@@ -96,39 +113,37 @@ def get_intent(query: str) -> str:
             if any(word in query for word in words):
                 return intent
         return 'unknown'
-    
+
     # Cache simples para evitar recalcular sempre
     if query in _intent_cache:
         return _intent_cache[query]
-    
+
     try:
         from sentence_transformers import util
         import torch
-
         model = load_model()
         if model is None:
             return 'unknown'
-
         intents = ['depósito', 'saldo', 'cartão', 'fees', 'viagens', 'suporte', 'yield', 'cashback']
         query_emb = model.encode(query, convert_to_tensor=True)
-        
+
         best_score = -1
         best_intent = 'unknown'
-        
+
         for intent in intents:
             intent_emb = model.encode(intent, convert_to_tensor=True)
             score = util.cos_sim(query_emb, intent_emb).item()
             if score > best_score:
                 best_score = score
                 best_intent = intent
-        
+
         if best_score > 0.62:  # threshold ajustado para mais precisão
             _intent_cache[query] = best_intent
             return best_intent
-        
+
         _intent_cache[query] = 'unknown'
         return 'unknown'
-    
+
     except Exception as e:
         logging.error(f"Erro no get_intent: {str(e)}")
         logging.error(traceback.format_exc())
@@ -145,23 +160,38 @@ def greet(name):
 @app.route('/chat', methods=['POST'])
 @limiter.limit("10 per minute")
 def chat():
+    client_id = get_client_id()
+    if not client_id:
+        return jsonify({"error": "API key inválida ou ausente. Usa Authorization: Bearer <token>"}), 401
+
     data = request.get_json(silent=True) or {}
     query = data.get('query', '').strip()
-    
+
     if not query:
         return jsonify({"response": "Escreve uma pergunta válida!"}), 400
-    
+
     # Deteta o idioma da pergunta
     try:
         lang = detect(query)
     except LangDetectException:
-        lang = 'pt'  # Se não detetar, usa português
-    
-    # Nome e saldo (podes mudar depois)
-    name = "Tomás"
-    balance = 1250.75
-    
-    # Respostas em vários idiomas
+        lang = 'pt'
+
+    # Carrega config do cliente do DB
+    conn = sqlite3.connect('clients.db')
+    c = conn.cursor()
+    c.execute("SELECT name, config_json FROM clients WHERE client_id=?", (client_id,))
+    result = c.fetchone()
+    conn.close()
+
+    if result:
+        name = result[0]
+        config = json.loads(result[1]) if result[1] else {}
+        balance = config.get('balance', 1250.75)
+        greeting_custom = config.get('greeting')
+    else:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+
+    # Respostas multilíngue (todas as línguas que tinhas)
     responses = {
         'pt': {
             'greeting': f"Olá {name}! 👋 Saldo atual: {balance:.2f} USDC. ",
@@ -332,63 +362,58 @@ def chat():
             'unknown': "Nie do końca zrozumiałem... Spróbuj inaczej sformułować (np. 'saldo', 'wpłacić', 'karta')."
         },
     }
-    
-    # Escolhe as respostas no idioma detetado (ou português se não souber)
+
     res = responses.get(lang, responses['pt'])
-    
+
     intent = get_intent(query)
-    
+
     # Monta a resposta
-    resposta = res['greeting']
+    if greeting_custom:
+        resposta = greeting_custom.format(name=name, balance=balance)
+    else:
+        resposta = res['greeting'].format(name=name, balance=balance)
+
     if intent in res:
         resposta += res[intent]
     else:
         resposta += res['unknown']
-    
+
     resposta += f"\n\n({datetime.now().strftime('%d/%m/%Y %H:%M')})"
-    
-    logging.info(f"Pergunta: '{query}' (idioma: {lang}) → Intent: {intent}")
-    
+
+    logging.info(f"Pergunta: '{query}' (idioma: {lang}) → Intent: {intent} → Client: {client_id}")
+
     return jsonify({"response": resposta})
 
-from solana.rpc.api import Client
-from solders.signature import Signature
-from datetime import datetime  
-import logging 
-
-# RPC público da Solana (mainnet – grátis)
+# Verificação de transação Solana
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 
 @app.route('/verify-tx', methods=['POST'])
 def verify_tx():
     data = request.get_json(silent=True) or {}
     tx_hash = data.get('tx_hash', '').strip()
-    
+
     if not tx_hash:
         return jsonify({"response": "Manda o tx hash! Exemplo: {'tx_hash': '5x...'}"}), 400
-    
+
     try:
         client = Client(SOLANA_RPC)
         sig = Signature.from_string(tx_hash)
         tx = client.get_transaction(sig, max_supported_transaction_version=0)
-        
+
         if tx.value is None:
             return jsonify({"response": "Transação não encontrada ou inválida."}), 404
-        
-        # Detalhes simples
+
         block_time = tx.value.block_time
         date_str = datetime.fromtimestamp(block_time).strftime("%d/%m/%Y %H:%M") if block_time else "Data desconhecida"
-        
-        # Mudança de saldo (simples – em SOL)
+
         meta = tx.value.transaction.meta
         pre_bal = meta.pre_balances[0] if meta and meta.pre_balances else 0
         post_bal = meta.post_balances[0] if meta and meta.post_balances else 0
-        amount_changed = (post_bal - pre_bal) / 1_000_000_000 if pre_bal or post_bal else 0  # evita divisão por zero
-        
+        amount_changed = (post_bal - pre_bal) / 1_000_000_000 if pre_bal or post_bal else 0
+
         response = f"Transação válida! Data: {date_str}. Mudança de saldo: {amount_changed:.4f} SOL (aprox)."
-        
         return jsonify({"response": response})
-    
+
     except Exception as e:
         logging.error(f"Erro ao verificar tx Solana: {str(e)}")
         logging.error(traceback.format_exc())
