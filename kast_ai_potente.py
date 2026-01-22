@@ -20,12 +20,9 @@ import sqlite3
 import json
 from flask_jwt_extended import JWTManager, create_access_token, verify_jwt_in_request, get_jwt_identity
 
-# Esta é a chave secreta que eu escolhi para ti (não mudes por agora)
 app.config['JWT_SECRET_KEY'] = 'tomas-kast-ai-2026-super-secreto-xyz1234567890'
-
 jwt = JWTManager(app)
 
-# Cria uma pequena base de dados para guardar os clientes (não precisas fazer nada, ela cria sozinha)
 def init_db():
     conn = sqlite3.connect('clients.db')
     c = conn.cursor()
@@ -34,18 +31,36 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()  # Executa automaticamente quando ligas o programa
+init_db()
 
-# Rate limiting (segurança básica)
-limiter = Limiter(
-    get_remote_address,
-    app=app,
-    default_limits=["100 per day", "20 per hour"]
-)
+def get_client_id():
+    try:
+        verify_jwt_in_request()
+        return get_jwt_identity()
+    except:
+        return None
 
-# Variáveis globais lazy (carrega só quando necessário)
-_model = None
-_intent_cache = {}
+@app.route('/add-client', methods=['POST'])
+def add_client():
+    data = request.get_json()
+    client_id = data.get('client_id')
+    name = data.get('name')
+    config = data.get('config', {})
+    if not client_id or not name:
+        return jsonify({"error": "Falta client_id ou name"}), 400
+
+    conn = sqlite3.connect('clients.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO clients (client_id, name, config_json) VALUES (?, ?, ?)",
+              (client_id, name, json.dumps(config)))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+@app.route('/generate-key/<client_id>', methods=['GET'])
+def generate_key(client_id):
+    token = create_access_token(identity=client_id)
+    return jsonify({"api_key": token})
 
 def load_model():
     """Carrega o modelo apenas na primeira chamada (evita crash no import global)"""
